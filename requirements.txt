@@ -1,0 +1,14 @@
+huggingsound
+fsspec==2024.10.0
+torch==2.5.1
+torchaudio==2.5.1+cu121
+torchvision==0.20.1+cu121
+peft
+python-telegram-bot
+pandas
+openpyxl
+nest_asyncio
+fuzzywuzzy
+librosa
+numpy
+requests

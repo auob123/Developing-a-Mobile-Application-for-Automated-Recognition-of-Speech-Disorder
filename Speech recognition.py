@@ -612,3 +612,140 @@ if __name__ == '__main__':
     batch_size = 10  # Adjust as necessary
     epochs = 100
     main(learning_rate, batch_size, epochs)
+
+
+
+
+
+
+
+
+# telegram bot
+
+import numpy as np
+import librosa
+import nest_asyncio
+import pandas as pd
+import requests
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from fuzzywuzzy import fuzz  # Импортируем fuzzywuzzy для расстояния Левенштейна
+import os
+
+# Применяем nest_asyncio для разрешения вложенных событийных циклов
+nest_asyncio.apply()
+
+# Конфигурация
+EXCEL_FILE_PATH = "/content/Adjusted_Data.xlsx"  # Измените это на ваш статический путь к файлу
+TOKEN = "tok"  # Замените на ваш фактический токен
+API_URL = "https://api-inference.huggingface.co/models/jonatasgrosman/wav2vec2-large-xlsr-53-russian"
+headers = {"Authorization": ""}  # Замените на ваш фактический токен
+
+# Загружаем Excel файл в память и преобразуем 'id' в строку
+df = pd.read_excel(EXCEL_FILE_PATH)
+df['id'] = df['id'].astype(str)  # Убедитесь, что 'id' является строкой для сравнения
+
+# Утилитарные функции
+def calculate_accuracy(predicted_text, actual_text):
+    predicted_words = predicted_text.split()
+    actual_words = actual_text.split()
+
+    # Подсчитываем правильные совпадения
+    correct_words = sum(1 for p, a in zip(predicted_words, actual_words) if p == a)
+
+    # Рассчитываем точность как долю правильных слов от общего количества фактических слов
+    accuracy = correct_words / len(actual_words) if actual_words else 0
+
+    # Рассчитываем точность и полноту
+    precision = correct_words / len(predicted_words) if predicted_words else 0
+    recall = correct_words / len(actual_words) if actual_words else 0
+
+    return accuracy, precision, recall
+
+def calculate_levenshtein_accuracy(predicted_text, actual_text):
+    return fuzz.ratio(predicted_text, actual_text) / 100  # Нормализовано до [0, 1]
+
+def query(filename):
+    with open(filename, "rb") as f:
+        data = f.read()
+    response = requests.post(API_URL, headers=headers, data=data)
+    #print(f"Запрос к API отправлен на {API_URL} с кодом состояния: {response.status_code}")
+    return response.json()
+
+# Обработчики Telegram бота
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text("Здравствуйте! Отправьте мне файл аудио .wav, и я постараюсь распознать речь!")
+
+async def handle_audio(update: Update, context: CallbackContext):
+    print("Аудиофайл получен!")
+
+    if update.message.audio:
+        audio_file = await update.message.audio.get_file()
+
+        # Получаем file_id и используем его для создания имени файла
+        audio_id = update.message.audio.file_id  # Определяем audio_id здесь
+        original_filename = update.message.audio.file_name  # Получаем оригинальное имя файла
+        wav_file_path = original_filename  # Используем оригинальное имя файла для сохранения
+
+        # Выводим file_id и предполагаемое имя файла
+        print(f"Получен аудиофайл с file_id: {audio_id}")
+        print(f"Оригинальное имя файла для аудио: {original_filename}")
+
+        try:
+            await audio_file.download_to_drive(wav_file_path)
+            print(f"Аудиофайл сохранен как {wav_file_path}")
+
+            # Используем предполагаемое имя файла для обработки
+            output = query(wav_file_path)
+            print(f"Ответ Модель: {output}")
+
+            if "text" in output:
+                predicted_text = output["text"]
+                print(f"Предсказанный текст: {predicted_text}")
+
+                # Извлекаем ID из оригинального имени файла
+                extracted_id = original_filename.split('.')[0]  # Получаем ID (например, "1" из "1.wav")
+
+                # Сравниваем extracted_id с 'id' в DataFrame
+                actual_text = df.loc[df['id'] == extracted_id, 'text'].values
+                if actual_text.size > 0:
+                    actual_text = actual_text[0]
+
+                    # Рассчитываем метрики точности
+                    accuracy, precision, recall = calculate_accuracy(predicted_text, actual_text)
+                    levenshtein_accuracy = calculate_levenshtein_accuracy(predicted_text, actual_text)
+
+                    await update.message.reply_text(
+                        f"Предсказанный текст: {predicted_text}\n"
+                        f"Фактический текст: {actual_text}\n"
+                        f"Точность: {levenshtein_accuracy:.2%}"
+                    )
+                else:
+                    print("Не найдено фактической транскрипции для этого аудиофайла.")
+                    await update.message.reply_text("Не найдено фактической транскрипции для этого аудиофайла.")
+            else:
+                print("Ошибка: Транскрипция не возвращена от API.")
+                await update.message.reply_text("Ошибка: Транскрипция не возвращена от API.")
+
+        except Exception as e:
+            print(f"Ошибка во время обработки аудио: {e}")
+            await update.message.reply_text("Произошла ошибка при обработке вашего аудиофайла.")
+    else:
+        print("В сообщении не найден аудиофайл.")
+        await update.message.reply_text("Пожалуйста, отправьте действительный аудиофайл.")
+
+# Основная функция
+def main():
+    # Создаем приложение
+    app = Application.builder().token(TOKEN).build()
+
+    # Регистрируем обработчики команд и сообщений
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))  # Слушаем аудиофайлы
+
+    # Запускаем бота в существующем цикле событий
+    app.run_polling()
+
+# Запускаем бота
+if __name__ == "__main__":
+    main()
